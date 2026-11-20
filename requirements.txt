@@ -1,5 +1,6 @@
 opencv-python
 numpy
 pymupdf
+openpyxl
 PySide6-Essentials
 pytest

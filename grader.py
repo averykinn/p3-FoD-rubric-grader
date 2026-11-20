@@ -70,7 +70,7 @@ PAPER_WINDOW = 40
 
 @dataclass(frozen=True)
 class Question:
-    key: str  # used for the CSV column and the review screen's box
+    key: str  # used for the export column and the review screen's box
     label: str  # what the review screen calls it
     centres: tuple[tuple[float, float], ...]  # bubble centres, left to right
     scores: tuple[int, ...]  # the score each bubble stands for

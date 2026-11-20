@@ -1,11 +1,10 @@
-# Checks reading whole PDFs, checking typed-in scores, and writing the CSV.
+# Checks reading whole PDFs, checking typed-in scores, and writing the Excel file.
 
-import codecs
-import csv
 import sys
 from pathlib import Path
 
 import numpy as np
+import openpyxl
 import pymupdf
 import pytest
 
@@ -13,14 +12,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import fakes  # noqa: E402
 from pipeline import (  # noqa: E402
-    CSV_COLUMNS,
+    COLUMNS,
     PageResult,
     _render_dpi,
     check_answer,
     count_pages,
     get_template,
     scan_pdf,
-    write_csv,
+    write_xlsx,
 )
 
 ANSWERS = {"presentation": 8, "quality": 10, "delivery": 9, "qa": 10, "member_1": 4, "member_2": 3, "member_3": 5}
@@ -127,32 +126,36 @@ def test_check_answer(key, text, ok):
     assert (check_answer(key, text) == "") == ok
 
 
-def test_write_csv(tmp_path):
+def test_write_xlsx(tmp_path):
     pages = [
         PageResult(Path("scans/monday.pdf"), 1, dict(EXPECTED_TEXT), comments='Great demo, "clear" slides\nsecond line'),
         PageResult(Path("scans/tuesday.pdf"), 3, {"presentation": " 7 "}, error="Could not find the table."),
     ]
-    out = tmp_path / "grades.csv"
-    write_csv(pages, out)
+    out = tmp_path / "grades.xlsx"
+    write_xlsx(pages, out)
 
-    assert out.read_bytes().startswith(codecs.BOM_UTF8)  # so Excel reads it as UTF-8
-    with open(out, encoding="utf-8-sig", newline="") as file:
-        rows = list(csv.reader(file))
-    assert rows[0] == CSV_COLUMNS == [
+    sheet = openpyxl.load_workbook(out).active
+    rows = list(sheet.iter_rows(values_only=True))
+    assert list(rows[0]) == COLUMNS == [
         "File", "Page", "Presentation", "Quality", "Delivery", "QA",
         "Member #1", "Member #2", "Member #3", "Member #4", "Member #5", "Member #6", "Comments",
     ]
-    assert rows[1] == ["monday.pdf", "1", "8", "10", "9", "10", "4", "3", "5", "", "", "", 'Great demo, "clear" slides\nsecond line']
-    assert rows[2] == ["tuesday.pdf", "3", "7"] + [""] * 10
+    assert rows[1] == ("monday.pdf", 1, 8, 10, 9, 10, 4, 3, 5, None, None, None, 'Great demo, "clear" slides\nsecond line')
+    assert rows[2] == ("tuesday.pdf", 3, 7) + (None,) * 10
     assert len(rows) == 3
 
+    # The header row and the File and Page columns are bold and stay on screen.
+    assert all(cell.font.bold for cell in sheet[1])
+    assert sheet["A2"].font.bold and sheet["B2"].font.bold and not sheet["C2"].font.bold
+    assert sheet.freeze_panes == "C2"
 
-def test_csv_comments_cant_turn_into_formulas_and_scores_are_tidied(tmp_path):
+
+def test_xlsx_comments_cant_turn_into_formulas_and_scores_are_tidied(tmp_path):
     comments = ["- needs more eye contact", "+ great energy", "=1+1", "@Glenn good", "fine"]
     pages = [PageResult(Path("a.pdf"), n, {"quality": "05"}, comments=text) for n, text in enumerate(comments, 1)]
-    out = tmp_path / "grades.csv"
-    write_csv(pages, out)
-    with open(out, encoding="utf-8-sig", newline="") as file:
-        rows = list(csv.DictReader(file))
-    assert [row["Comments"] for row in rows] == [" - needs more eye contact", " + great energy", " =1+1", " @Glenn good", "fine"]
-    assert {row["Quality"] for row in rows} == {"5"}
+    out = tmp_path / "grades.xlsx"
+    write_xlsx(pages, out)
+    sheet = openpyxl.load_workbook(out).active
+    assert [cell.value for cell in sheet["M"][1:]] == comments
+    assert {cell.data_type for cell in sheet["M"][1:]} == {"s"}  # text, not formulas
+    assert {cell.value for cell in sheet["D"][1:]} == {5}

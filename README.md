@@ -16,15 +16,17 @@ py -m venv .venv
 
 1. **Upload screen:** drag scanned rubric PDFs onto the orange panel, or click
    **Upload PDF(s)**. Every page is straightened and its bubbles are read.
-   **Edit Export Destination** picks where the CSV is saved (it's remembered).
+   **Edit Export Destination** picks where the Excel file is saved (it's remembered).
 2. **Review screen:** the pages are listed on the left. Click one to see its scores
    on the right, and type over any that are wrong. Yellow boxes are ones the reader
    wasn't sure about (hover for why); press Enter to keep a yellow box's value.
    Ctrl+PageDown / Ctrl+PageUp move to the next / previous page. If a page couldn't
    be lined up with the rubric, its topic boxes stay yellow until you type the
    scores in from the paper.
-3. **Export to CSV** writes one row per page: file, page, the four topic scores,
-   each member's participation score and the comments.
+3. **Export to Excel** writes an `.xlsx` workbook with one row per page: file, page,
+   the four topic scores, each member's participation score and the comments. The
+   header row names every column, the File and Page columns label every row, and
+   both stay on screen while scrolling. Scores are saved as numbers.
 
 The "Underachieved (score = 0-4)" column only has four bubbles, which are read as
 1-4. A score of 0 has to be typed in on the review screen.
@@ -38,7 +40,7 @@ The "Underachieved (score = 0-4)" column only has four bubbles, which are read a
 - `grader.py` knows where every bubble is on the blank rubric, measures how dark
   each one is on the straightened page, and notes anything doubtful (nothing
   filled in, a faint mark, two bubbles filled in).
-- `pipeline.py` ties those together for whole PDFs and writes the CSV.
+- `pipeline.py` ties those together for whole PDFs and writes the Excel file.
 - `app.py` is the window: the upload and review screens.
 
 A point at `(x, y)` PDF points on the blank rubric is at `(x, y) * dpi / 72` pixels

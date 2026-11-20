@@ -5,7 +5,7 @@
 # 2. Review screen: the pages are listed on the left. Click one to see the
 #    scores read from it on the right, and type over any that are wrong.
 #    Yellow boxes are ones the reader wasn't sure about (hover for why).
-# 3. "Export to CSV" saves every page's scores to the export destination.
+# 3. "Export to Excel" saves every page's scores to the export destination.
 #
 # Run it with:  python app.py
 
@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from grader import QUESTIONS
-from pipeline import PageResult, check_answer, count_pages, get_template, scan_pdf, write_csv
+from pipeline import PageResult, check_answer, count_pages, get_template, scan_pdf, write_xlsx
 
 UPLOAD_ORANGE = "#FFA042"
 UPLOAD_ORANGE_HOVER = "#FF8E1F"  # while files are dragged over the panel
@@ -141,12 +141,18 @@ def ask_replace(parent: QWidget, path: Path) -> str:
     return "elsewhere" if box.clickedButton() is elsewhere else "cancel"
 
 
-def choose_csv_path(parent: QWidget, start: Path) -> Path | None:
-    path, _ = QFileDialog.getSaveFileName(parent, "Choose where to save the CSV", str(start), "CSV files (*.csv)")
+def choose_export_path(parent: QWidget, start: Path) -> Path | None:
+    path, _ = QFileDialog.getSaveFileName(parent, "Choose where to save the Excel file", str(start), "Excel workbooks (*.xlsx)")
     if not path:
         return None
-    path = Path(path)
-    return path if path.suffix else path.with_suffix(".csv")
+    return as_xlsx(Path(path))
+
+
+def as_xlsx(path: Path) -> Path:
+    # "grades" -> "grades.xlsx", and an old "grades.csv" destination -> "grades.xlsx".
+    if path.suffix.lower() == ".xlsx":
+        return path
+    return path.with_suffix(".xlsx") if path.suffix.lower() == ".csv" else path.with_name(path.name + ".xlsx")
 
 
 def choose_pdfs(parent: QWidget) -> list[Path]:
@@ -610,7 +616,7 @@ class ReviewPanel(QFrame):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        self.export_button = QPushButton("Export to CSV", objectName="primary")
+        self.export_button = QPushButton("Export to Excel", objectName="primary")
         self.export_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.destination = QLabel(objectName="panelDestination")
         self.destination.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -729,7 +735,7 @@ class MainWindow(QMainWindow):
         self.upload.destination_button.clicked.connect(self.choose_destination)
         self.review.page_list.page_selected.connect(self.show_page)
         self.review.panel.edited.connect(self.page_edited)
-        self.review.panel.export_button.clicked.connect(self.export_csv)
+        self.review.panel.export_button.clicked.connect(self.export)
         self.review.panel.start_over_button.clicked.connect(self.start_over)
         # Ctrl+PageDown / Ctrl+PageUp: next / previous page, without the mouse.
         for keys, step in (("Ctrl+PgDown", 1), ("Ctrl+PgUp", -1)):
@@ -743,12 +749,12 @@ class MainWindow(QMainWindow):
     def export_path(self) -> Path:
         saved = self.settings.value("export_path", "")
         if saved:
-            return Path(saved)
+            return as_xlsx(Path(saved))  # a destination saved before the switch from CSV
         documents = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-        return Path(documents) / "rubric_grades.csv"
+        return Path(documents) / "rubric_grades.xlsx"
 
     def choose_destination(self) -> bool:
-        path = choose_csv_path(self, self.export_path())
+        path = choose_export_path(self, self.export_path())
         if path is None:
             return False
         self.settings.setValue("export_path", str(path))
@@ -840,7 +846,7 @@ class MainWindow(QMainWindow):
 
     # --- export -------------------------------------------------------------
 
-    def export_csv(self) -> None:
+    def export(self) -> None:
         for index, page in enumerate(self.pages):
             for question in QUESTIONS:
                 problem = check_answer(question.key, page.answers.get(question.key, ""))
@@ -868,7 +874,7 @@ class MainWindow(QMainWindow):
         while True:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                write_csv(self.pages, path)
+                write_xlsx(self.pages, path)
                 break
             except OSError as error:
                 if isinstance(error, PermissionError) and path.exists():
@@ -883,7 +889,7 @@ class MainWindow(QMainWindow):
         show_info(self, "Exported", f"Saved {plural(len(self.pages), 'page')} to\n{path}")
 
     def closeEvent(self, event) -> None:
-        if self.unsaved and self.pages and not ask_yes_no(self, "Quit without exporting?", "The scores haven't been exported to CSV yet. Quit anyway?"):
+        if self.unsaved and self.pages and not ask_yes_no(self, "Quit without exporting?", "The scores haven't been exported to Excel yet. Quit anyway?"):
             event.ignore()
             return
         self.stop_scan()

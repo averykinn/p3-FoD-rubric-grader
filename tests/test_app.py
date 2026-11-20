@@ -1,7 +1,6 @@
 # Checks the app's screens without opening a real window: uploading PDFs,
-# fixing scores on the review screen, and exporting the CSV.
+# fixing scores on the review screen, and exporting to Excel.
 
-import csv
 import os
 import sys
 from pathlib import Path
@@ -9,6 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # no window on screen
 
 import numpy as np  # noqa: E402
+import openpyxl  # noqa: E402
 import pytest  # noqa: E402
 from PySide6.QtCore import QEventLoop, QMimeData, QPointF, QSettings, Qt, QTimer, QUrl  # noqa: E402
 from PySide6.QtGui import QDropEvent  # noqa: E402
@@ -29,11 +29,11 @@ class Dialogs:
     def __init__(self):
         self.shown = []
         self.yes = True  # answer to yes/no questions
-        self.replace = "replace"  # answer when the CSV already exists
+        self.replace = "replace"  # answer when the Excel file already exists
         self.elsewhere = None  # the path picked in the "save somewhere else" file chooser (None = cancel)
 
-    def choose_csv_path(self, parent, start):
-        self.shown.append(("choose", "Choose where to save the CSV", ""))
+    def choose_export_path(self, parent, start):
+        self.shown.append(("choose", "Choose where to save the Excel file", ""))
         return self.elsewhere
 
     def choose_pdfs(self, parent):
@@ -72,7 +72,7 @@ def template():
 @pytest.fixture
 def dialogs(monkeypatch):
     fake = Dialogs()
-    for name in ("ask_yes_no", "ask_replace", "show_warning", "show_info", "choose_csv_path", "choose_pdfs"):
+    for name in ("ask_yes_no", "ask_replace", "show_warning", "show_info", "choose_export_path", "choose_pdfs"):
         monkeypatch.setattr(rubric_app, name, getattr(fake, name))
     return fake
 
@@ -80,7 +80,7 @@ def dialogs(monkeypatch):
 @pytest.fixture
 def window(qapp, dialogs, tmp_path):
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
-    settings.setValue("export_path", str(tmp_path / "out" / "grades.csv"))
+    settings.setValue("export_path", str(tmp_path / "out" / "grades.xlsx"))
     main_window = rubric_app.MainWindow(settings)
     main_window.resize(1300, 900)
     main_window.show()
@@ -122,14 +122,15 @@ def type_into(box, text):
     QTest.keyClicks(box, text)
 
 
-def read_csv(path):
-    with open(path, encoding="utf-8-sig", newline="") as file:
-        return list(csv.DictReader(file))
+def read_sheet(path):
+    # The exported rows as dicts keyed by the header row.
+    header, *rows = openpyxl.load_workbook(path).active.iter_rows(values_only=True)
+    return [dict(zip(header, row)) for row in rows]
 
 
 def test_upload_screen_to_review_screen(window, demo_pdf):
     assert window.stack.currentWidget() is window.upload
-    assert "grades.csv" in window.upload.destination.text()
+    assert "grades.xlsx" in window.upload.destination.text()
 
     scan(window, [demo_pdf])
 
@@ -194,7 +195,7 @@ def test_out_of_range_score_blocks_export(window, demo_pdf, dialogs):
     assert box.property("state") == "invalid"
     window.review.page_list.select(0)
 
-    window.export_csv()
+    window.export()
     assert dialogs.titles("warning") == ["Can't export yet"]
     assert window.review.page_list.current == 1  # it jumped to the problem
     assert not window.export_path().exists()
@@ -209,16 +210,16 @@ def test_export_writes_every_page(window, demo_pdf, dialogs):
     assert panel.hint.isVisible()
     type_into(panel.boxes["presentation"], "4")
 
-    window.export_csv()
+    window.export()
 
     # Page 2 still has two yellow boxes and page 3 three blank topic scores, so it asked first.
     assert dialogs.titles("ask") == ["Export anyway?"]
     assert "5 yellow boxes" in dialogs.shown[0][2]
-    rows = read_csv(window.export_path())
-    assert [(row["File"], row["Page"]) for row in rows] == [("demo.pdf", "1"), ("demo.pdf", "2"), ("demo.pdf", "3")]
-    assert rows[0]["Presentation"] == "8" and rows[0]["Member #2"] == "3" and rows[0]["Comments"] == "Good, clear talk"
-    assert rows[1]["Quality"] == "7"
-    assert rows[2]["Presentation"] == "4" and rows[2]["Quality"] == ""
+    rows = read_sheet(window.export_path())
+    assert [(row["File"], row["Page"]) for row in rows] == [("demo.pdf", 1), ("demo.pdf", 2), ("demo.pdf", 3)]
+    assert rows[0]["Presentation"] == 8 and rows[0]["Member #2"] == 3 and rows[0]["Comments"] == "Good, clear talk"
+    assert rows[1]["Quality"] == 7
+    assert rows[2]["Presentation"] == 4 and rows[2]["Quality"] is None
     assert not window.unsaved
     assert dialogs.titles("info") == ["Exported"]
 
@@ -226,39 +227,39 @@ def test_export_writes_every_page(window, demo_pdf, dialogs):
 def test_export_can_be_cancelled(window, demo_pdf, dialogs):
     scan(window, [demo_pdf])
     dialogs.yes = False
-    window.export_csv()
+    window.export()
     assert not window.export_path().exists()
     assert window.unsaved
 
 
-def test_existing_csv_is_only_replaced_when_asked(window, demo_pdf, dialogs):
+def test_existing_file_is_only_replaced_when_asked(window, demo_pdf, dialogs):
     scan(window, [demo_pdf])
     path = window.export_path()
     path.parent.mkdir(parents=True)
     path.write_text("old")
 
     dialogs.replace = "cancel"
-    window.export_csv()
+    window.export()
     assert path.read_text() == "old"
 
     dialogs.replace = "replace"
-    window.export_csv()
-    assert len(read_csv(path)) == 3
+    window.export()
+    assert len(read_sheet(path)) == 3
 
 
 def test_failed_export_offers_somewhere_else(window, demo_pdf, dialogs, tmp_path):
     scan(window, [demo_pdf])
     window.export_path().mkdir(parents=True)  # a folder where the file should go, so saving fails
     dialogs.replace = "replace"
-    window.export_csv()  # ...and the file chooser is cancelled
+    window.export()  # ...and the file chooser is cancelled
     assert dialogs.titles("ask") == ["Export anyway?", "Export failed"]
     assert window.unsaved
 
     dialogs.shown.clear()
-    dialogs.elsewhere = tmp_path / "usb" / "grades.csv"
-    window.export_csv()
+    dialogs.elsewhere = tmp_path / "usb" / "grades.xlsx"
+    window.export()
     assert dialogs.titles("ask") == ["Export anyway?", "Export failed"]
-    assert len(read_csv(dialogs.elsewhere)) == 3
+    assert len(read_sheet(dialogs.elsewhere)) == 3
     assert window.export_path() == dialogs.elsewhere
     assert not window.unsaved
 
@@ -290,13 +291,20 @@ def test_ctrl_page_down_moves_between_pages(window, demo_pdf):
 
 
 def test_choosing_the_export_destination(window, monkeypatch, tmp_path):
-    chosen = tmp_path / "elsewhere" / "fod_scores.csv"
-    monkeypatch.setattr(rubric_app, "choose_csv_path", lambda parent, start: chosen)
+    chosen = tmp_path / "elsewhere" / "fod_scores.xlsx"
+    monkeypatch.setattr(rubric_app, "choose_export_path", lambda parent, start: chosen)
     window.upload.destination_button.click()
     assert window.export_path() == chosen
     assert window.settings.value("export_path") == str(chosen)
-    assert "fod_scores.csv" in window.upload.destination.text()
+    assert "fod_scores.xlsx" in window.upload.destination.text()
     assert window.upload.destination.toolTip() == str(chosen)
+
+
+def test_old_csv_destination_becomes_xlsx(window, tmp_path):
+    window.settings.setValue("export_path", str(tmp_path / "grades.csv"))
+    assert window.export_path() == tmp_path / "grades.xlsx"
+    assert rubric_app.as_xlsx(tmp_path / "grades") == tmp_path / "grades.xlsx"
+    assert rubric_app.as_xlsx(tmp_path / "fod.v2") == tmp_path / "fod.v2.xlsx"
 
 
 def drop(window, paths, modifiers=Qt.KeyboardModifier.NoModifier):

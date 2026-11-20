@@ -1,5 +1,5 @@
 # Turn uploaded rubric PDFs into pages ready for review, and write the
-# reviewed scores to a CSV file.
+# reviewed scores to an Excel workbook.
 #
 # This is everything the app does apart from drawing the screens, so it can
 # be used and tested without a window:
@@ -8,7 +8,6 @@
 #     for page, image in scan_pdf("scans.pdf", template):
 #         print(page.page_number, page.answers, page.notes)
 
-import csv
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import cache
@@ -16,6 +15,9 @@ from pathlib import Path
 
 import numpy as np
 import pymupdf
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
 from aligner import AlignmentError, Template, align, load_template
 from grader import QUESTIONS, read_page
@@ -26,15 +28,17 @@ from rasterizer import DEFAULT_DPI, rasterize_page
 # scales every page to the template's size anyway.
 MAX_RENDER_SIDE = 3000  # pixels
 
-CSV_COLUMNS = ["File", "Page"] + [question.label for question in QUESTIONS] + ["Comments"]
+COLUMNS = ["File", "Page"] + [question.label for question in QUESTIONS] + ["Comments"]
+LABEL_COLUMNS = 2  # File and Page name each row
 
 QUESTIONS_BY_KEY = {question.key: question for question in QUESTIONS}
 
 UNREAD_NOTE = "This page couldn't be read. Type the score from the paper."
 
-# Excel treats a cell starting with one of these as a formula, so a comment
-# like "- needs more eye contact" would show as #NAME?.
-FORMULA_STARTS = ("=", "+", "-", "@")
+HEADER_FILL = PatternFill("solid", fgColor="FFD9B3")
+LABEL_FILL = PatternFill("solid", fgColor="F2F2F2")
+HEADER_BORDER = Border(bottom=Side("medium"))
+LABEL_BORDER = Border(right=Side("thin"))
 
 
 @dataclass
@@ -98,24 +102,49 @@ def check_answer(key: str, text: str) -> str:
     return ""
 
 
-def write_csv(pages: Iterable[PageResult], csv_path: str | Path) -> None:
-    # One row per page. utf-8-sig lets Excel open accented names and comments correctly.
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.writer(file)
-        writer.writerow(CSV_COLUMNS)
-        for page in pages:
-            scores = [_tidy_score(page.answers.get(question.key, "")) for question in QUESTIONS]
-            writer.writerow([page.source.name, page.page_number, *scores, _as_text(page.comments.strip())])
+def write_xlsx(pages: Iterable[PageResult], xlsx_path: str | Path) -> None:
+    # One row per page under a header row naming every column. The File and
+    # Page columns label each row, and stay on screen with the header while
+    # scrolling. Scores are saved as numbers so Excel can add them up.
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Grades"
+    sheet.append(COLUMNS)
+    for page in pages:
+        scores = [_score_value(page.answers.get(question.key, "")) for question in QUESTIONS]
+        sheet.append([page.source.name, page.page_number, *scores, page.comments.strip() or None])
+        # A comment like "= needs work" would otherwise be saved as a formula.
+        sheet.cell(sheet.max_row, len(COLUMNS)).data_type = "s"
+
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+        cell.fill = HEADER_FILL
+        cell.border = HEADER_BORDER
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row[:LABEL_COLUMNS]:
+            cell.font = Font(bold=True)
+            cell.fill = LABEL_FILL
+            cell.alignment = Alignment(horizontal="left", vertical="top")
+        row[LABEL_COLUMNS - 1].border = LABEL_BORDER
+        for cell in row[LABEL_COLUMNS:-1]:
+            cell.alignment = Alignment(horizontal="center", vertical="top")
+        row[-1].alignment = Alignment(vertical="top", wrap_text=True)
+
+    file_width = max([len(COLUMNS[0])] + [len(str(cell.value)) for cell in sheet["A"][1:]])
+    widths = [min(file_width + 2, 50), 8] + [max(len(question.label) + 2, 8) for question in QUESTIONS] + [60]
+    for index, width in enumerate(widths, 1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    sheet.freeze_panes = sheet.cell(2, LABEL_COLUMNS + 1)
+    sheet.auto_filter.ref = sheet.dimensions  # sort and filter buttons on the header
+    book.save(xlsx_path)
 
 
-def _tidy_score(text: str) -> str:
+def _score_value(text: str) -> int | str | None:
     text = text.strip()
-    return str(int(text)) if text.isdigit() else text  # "05" -> "5"
-
-
-def _as_text(text: str) -> str:
-    # A leading space stops Excel reading the comment as a formula.
-    return " " + text if text.startswith(FORMULA_STARTS) else text
+    if text.isdigit():
+        return int(text)  # "05" -> 5
+    return text or None  # blank stays an empty cell
 
 
 def _check_readable(doc: pymupdf.Document) -> None:
